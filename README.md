@@ -187,15 +187,17 @@ docker compose --env-file .env -f deploy/docker/compose.yaml stop
 | `config.yaml`、`.env.example` | 配置默认值及本机环境变量模板 |
 | `requirements.txt`、`requirements.lock.txt`、`.python-version` | 依赖清单、锁定依赖及 Python 版本 |
 
-`docs/`、`reports/`、`archive/` 为本地文档、验收报告和归档，不上传 Gitee。`.env`、虚拟环境、日志、缓存、备份和本地知识反馈也由 `.gitignore` 排除。根目录 `README.md` 保留上述独立启动说明。
+`local_artifacts/` 集中存放本地测试临时目录、pytest 缓存、历史文档、报告和归档，不上传 Gitee；原有材料按目录名保留，例如 `local_artifacts/.pytest_tmp_audit_20261007/` 和 `local_artifacts/archive/`。pytest 默认缓存写入 `local_artifacts/pytest-cache/`。`.env`、`.venv/`、运行日志、`.runtime/` 和 `data/knowledge_feedback/` 仍使用原路径，避免影响运行。根目录 `README.md` 保留独立启动说明。
 
-数据库中的账号、历史演练和已发布知识，以及 Docker 数据卷不随源码上传；新机器需要自行配置并初始化。部分历史验收、归档完整性和文档验证脚本依赖未上传的目录，不属于日常启动流程。
+数据库中的账号、历史演练和已发布知识，以及 Docker 数据卷不随源码上传；新机器需要自行配置并初始化。部分历史验收、归档完整性和文档验证脚本依赖未上传的目录，不属于日常启动流程；这些脚本仍引用原来的 `docs/`、`reports/` 或 `archive/` 路径，执行前需将所需材料从 `local_artifacts/` 移回对应路径。
 
 离线回归测试在项目根目录运行，不需要先启动应用：
 
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE = '1'
-.\.venv\Scripts\python.exe -B -m pytest -q -m "not integration" -o cache_dir=.pytest_cache --basetemp .pytest_tmp_readme --tb=short
+New-Item -ItemType Directory -Path local_artifacts/test-runs -Force | Out-Null
+$testRunPath = "local_artifacts/test-runs/$(Get-Date -Format 'yyyyMMdd-HHmmss-fff')"
+.\.venv\Scripts\python.exe -B -m pytest -q -m "not integration" --basetemp $testRunPath --tb=short
 ```
 
 测试会隔离本机凭据，并禁止单元测试真实网络访问。前端身份、会话、审核和 SSE 测试可选安装 Node.js 后运行 `node --test tests/auth_client.test.cjs tests/session_client.test.cjs tests/review_client.test.cjs tests/sse_client.test.cjs`；日常运行无需 Node.js。

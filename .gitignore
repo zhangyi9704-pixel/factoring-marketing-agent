@@ -37,3 +37,6 @@ archive/generated/
 /docs/
 /reports/
 /archive/
+
+# Consolidated local test output, historical material and move manifests.
+/local_artifacts/
