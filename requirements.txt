@@ -1,0 +1,45 @@
+# =====================================================
+# factoring-sales-coach 依赖清单
+# 依据：当前技术文档 §2.4；Python 3.11。
+# PowerShell（项目根目录）：uv pip install --python .venv\Scripts\python.exe -r requirements.txt
+# 重建同版本环境使用 requirements.lock.txt；不修改全局 pip 源。
+# =====================================================
+
+# ===== Web 框架 =====
+fastapi>=0.110,<1
+uvicorn[standard]>=0.29,<1
+python-multipart>=0.0.20,<1
+PyJWT==2.15.1               # HS256/required claims; no hand-written JWT protocol
+
+# ===== Agent 编排 =====
+langgraph>=1.0,<2
+langgraph-checkpoint-redis==0.5.2  # RedisJSON/RediSearch：Redis Stack 7.4
+
+# ===== LLM（DeepSeek，OpenAI 兼容协议） =====
+openai>=1.30,<3
+
+# ===== RAG =====
+pymilvus==2.5.18            # 官方 Milvus 2.5.x 安装指南对应 SDK
+grpcio==1.67.1              # 满足 SDK 约束；核验 Windows cp311 原生扩展兼容性
+numpy>=1.26,<2              # Milvus 2.5 基线的 dense 向量计算
+pandas==2.2.3              # SDK 间接依赖；保持 2.x API 与 Python 3.11 基线
+# 默认云模式不安装 FlagEmbedding / torch。本地旧模式仅显式启用时懒加载；
+# 不在当前环境下载权重或安装本地模型依赖。
+pypdf>=4.0,<7
+python-docx>=1.1,<2
+
+# ===== 存储 =====
+redis>=5.2.1,<7
+sqlalchemy>=2.0,<3
+pymysql>=1.1,<2
+cryptography>=43,<50         # pymysql 的 caching_sha2_password 认证依赖
+
+# ===== 配置与工具 =====
+pyyaml>=6,<7
+python-dotenv>=1,<2
+httpx>=0.27,<1
+pydantic>=2.6,<3
+pydantic-settings>=2.2,<3
+
+# ===== 测试（开发阶段） =====
+pytest>=8,<10

@@ -1,0 +1,735 @@
+# =====================================================
+# 企业销售智能教练 Agent
+#
+# Factoring Sales Coach Agent
+#
+# Architecture:
+# FastAPI
+# + LangGraph
+# + DeepSeek-V4
+# + RAG
+# + Single Agent / coach_graph
+# + Evaluation Pipeline
+#
+# =====================================================
+
+
+application:
+  name:
+    factoring-sales-coach
+  version:
+    1.0.0
+  environment:
+    development
+
+# =====================================================
+# API Server
+# =====================================================
+
+server:
+  host:
+    127.0.0.1
+  port:
+    8000
+  workers:
+    4
+  api_prefix:
+    /api/v1
+
+# =====================================================
+# DeepSeek LLM Configuration
+# =====================================================
+llm:
+  provider:
+    deepseek
+  api:
+    base_url:
+      https://api.deepseek.com
+    api_key:
+      ${DEEPSEEK_API_KEY}
+  models:
+    # ====================================
+    # 复杂业务分析模型
+    # ====================================
+    reasoning:
+      name:
+        deepseek-v4-pro
+      temperature:
+        0.2
+      max_tokens:
+        20000
+      thinking:
+        enabled: true
+      reasoning_effort:
+        high
+
+    # ====================================
+    # 高频交互模型
+    # ====================================
+    chat:
+      name:
+        deepseek-v4-flash
+      temperature:
+        0.4
+      max_tokens:
+        4096
+      thinking:
+        enabled: false
+
+  timeout:
+    connect:
+      10
+    read:
+      120
+
+  retry:
+    enabled:
+      true
+    # LLM/embedding/rerank 共用：总尝试次数（含首次），关闭 SDK 隐式重试。
+    max_attempts:
+      3
+    backoff_initial: 0.25
+    backoff_max: 2.0
+
+# =====================================================
+# LangGraph Workflow
+# =====================================================
+langgraph:
+  enabled:
+    true
+  # 单 Agent 架构：唯一图 coach_graph（技术设计文档（新）§6.1）
+  workflow_name:
+    coach_graph
+  checkpoint:
+    enabled:
+      true
+    backend:
+
+      redis
+    host: 127.0.0.1
+    port: 6380
+    password: ${CHECKPOINT_REDIS_PASSWORD}
+    ttl:
+      86400
+  state:
+    name:
+      CoachState
+
+# =====================================================
+# Agent Configuration
+# =====================================================
+agents:
+  # =================================================
+  # 节点 1
+  # 访前简报（单 Agent 图内普通节点，技术设计文档（新）§7）
+  # =================================================
+  briefing:
+    enabled:
+      true
+    # Cooperative total budget for retrieval, generation and compliance checks.
+    # Exhaustion returns deterministic public-fact guidance for human review.
+    timeout_seconds: 120
+
+    name:
+      访前简报
+    llm:
+      model:
+        reasoning
+    # priority_questions 上限（§7.2 Schema）
+    max_questions:
+      5
+    # visit_goals 上限
+    max_goals:
+      4
+
+  # =================================================
+  # 情景演练循环（单 Agent 图内六节点循环，§6.1）
+  # =================================================
+  roleplay:
+    enabled:
+      true
+
+    name:
+      情景演练Agent
+
+    llm:
+      model:
+        chat
+
+    type:
+      customer_simulator
+
+    objective:
+      >
+      基于客户Case状态模拟真实客户，
+      与销售进行多轮业务沟通。
+
+    behavior:
+
+      fact_constraint:
+        true
+
+      hallucination:
+        false
+
+      reveal_unknown:
+        dynamic
+
+    memory:
+      enabled:
+        true
+      window:
+        20
+
+# =====================================================
+# Customer Case State
+# =====================================================
+case:
+  storage:
+    mysql
+  schema:
+    case_id:
+      string
+
+    industry:
+      string
+
+    company:
+      string
+
+    client_role:
+      string
+
+    transaction_chain:
+      object
+
+    receivable:
+      object
+
+    pain_points:
+      list
+
+    known_risks:
+      list
+
+    unknown_info:
+      list
+
+    behavior_rules:
+      list
+
+  view:
+    sales:
+      allow:
+        - basic_information
+        - known_facts
+
+      deny:
+        - unknown_info
+        - hidden_risk
+
+    agent:
+      allow:
+        - all
+
+# =====================================================
+# RAG Configuration
+# =====================================================
+rag:
+  enabled:
+    true
+  embedding:
+    model:
+      qwen3.7-text-embedding
+    dimension:
+      1024
+    # local：进程内 FlagEmbedding（需 ≥4GB 空闲内存）
+    # http：自建 embedding 服务（TDD §11.4 方案 A）
+    # dashscope：阿里云托管 embedding；默认 qwen3.7-text-embedding
+    provider:
+      dashscope
+    url:
+      null
+    timeout:
+      120
+    api_key:
+      ${ALIYUN_API_KEY}
+    base_url:
+      https://dashscope.aliyuncs.com/compatible-mode/v1
+
+  vector_database:
+    type:
+      milvus
+
+    host:
+      127.0.0.1
+
+    port:
+      19530
+
+    collection:
+      factoring_knowledge_v2
+
+  chunk:
+    strategy:
+      parent_child
+    parent_size:
+      1200
+    child_size:
+      300
+    overlap:
+      50
+
+  retrieval:
+    recall_k: 20
+    # 2026-10-06独立RRF校准无达标阈值，精排故障时按无依据处理。
+    fallback_min_score: null
+    cache_ttl: 30
+    top_k:
+      10
+
+    rerank:
+      enabled:
+        true
+
+      # provider: dashscope（阿里云线上精排）/ passthrough（占位透传）
+      provider:
+        dashscope
+      model:
+        qwen3.7-text-rerank
+      base_url: https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
+
+      # 与 embedding 复用同一密钥（config.yaml 禁止明文，走 ${VAR}）
+      api_key:
+        ${ALIYUN_API_KEY}
+
+      # 2026-10-06人工复核标注校准；记录见docs/阈值校准记录.md。
+      # 全部低于该值 → 检索缺失走 human_review。
+      min_score:
+        0.867799
+
+      # 请求超时（秒）
+      timeout:
+        10
+
+      # 精排后保留条数（top10 → top5，§11.3）
+      top_n:
+        5
+
+    hybrid:
+      enabled:
+        true
+      sparse:
+        lexical_bigram_crc32_v1
+      fusion:
+        RRF
+      # RRF 融合常数 k
+      rrf_k:
+        60
+
+# =====================================================
+# Knowledge Base
+# =====================================================
+knowledge:
+  sources:
+    product:
+      path:
+        ./data/product
+
+      priority:
+        2
+
+    industry:
+      path:
+        ./data/industry
+      priority:
+        3
+
+    compliance:
+      path:
+        ./data/compliance
+
+      priority:
+        1
+
+    process:
+      path:
+        ./data/process
+
+      priority:
+        4
+
+  conflict:
+    strategy:
+      priority
+
+    order:
+      - compliance
+      - product
+      - industry
+      - process
+
+  missing:
+    action:
+      human_review
+
+    message:
+      >
+      当前知识库没有覆盖该问题，
+      请人工确认。
+
+
+# =====================================================
+# Evaluation Pipeline
+# =====================================================
+
+evaluation:
+  # 2026-10-06用户确认：去重warn每条扣5分，block计0。
+  warn_penalty: 5
+  enabled:
+    true
+
+  llm:
+    model:
+      reasoning
+
+  # 机会等级阈值（TDD §13.2：≥high 高潜机会 / ≥observe 观察 / <observe 暂缓）
+  levels:
+    high:
+      80
+    observe:
+      60
+
+  modules:
+    opportunity_diagnosis:
+      enabled:
+        true
+
+      dimensions:
+        transaction_authenticity:
+          weight:
+            25
+
+        receivable_quality:
+          weight:
+            25
+
+        payer_confirmation:
+          weight:
+            20
+
+        financing_need:
+          weight:
+            15
+
+        risk_identification:
+          weight:
+            15
+
+    sales_score:
+      rubric:
+        requirement_discovery:
+          weight:
+            25
+
+        business_understanding:
+          weight:
+            25
+
+        risk_awareness:
+          weight:
+            25
+
+        compliance:
+          weight:
+            25
+
+    evidence:
+      required:
+        true
+
+      source:
+        conversation
+
+      # 各评分维度关键词 → 从对话按 turn 抽原话（纯规则证据抽取，§13.4）
+      topics:
+        transaction_authenticity:
+          - 合同
+          - 真实性
+          - 中标
+          - 订单
+          - 结算
+          - 回款
+        receivable_quality:
+          - 应收
+          - 账期
+          - 计量
+          - 对账
+          - 验收
+          - 退货率
+        payer_confirmation:
+          - 付款方
+          - 业主
+          - 医院
+          - 平台
+          - 回款来源
+          - 付款主体
+        financing_need:
+          - 资金需求
+          - 融资
+          - 资金压力
+          - 缺口
+          - 垫资
+        risk_identification:
+          - 风险
+          - 逾期
+          - 坏账
+          - 质押
+          - 涉诉
+          - 处罚
+        requirement_discovery:
+          - 需求
+          - 资金需求
+          - 痛点
+          - 压力
+          - 金额
+          - 缺口
+        business_understanding:
+          - 交易
+          - 应收
+          - 付款
+          - 账期
+          - 融资
+          - 合同
+        risk_awareness:
+          - 验收
+          - 对账
+          - 回款
+          - 质押
+          - 逾期
+          - 风险
+        compliance:
+          - 额度
+          - 审批
+          - 放款
+          - 利率
+          - 以审批为准
+          - 合同约定
+
+    missing_question:
+      enabled:
+        true
+
+      source:
+        industry_checklist
+
+      # 行业 Checklist（规则比对 §13.5：遗漏 / 影响 / 建议 三段式输出）
+      industry_checklist:
+        基建:
+          - item: 付款主体
+            keywords:
+              - 付款方
+              - 谁付
+              - 业主
+              - 最终付款
+            impact: 决定回款来源与增信可行性
+            suggestion: 明确最终付款主体并核实合同付款路径
+          - item: 验收状态
+            keywords:
+              - 验收
+              - 完工
+              - 计量
+              - 交工
+            impact: 未验收部分应收不成立
+            suggestion: 索取竣工验收/计量资料
+          - item: 账期与回款
+            keywords:
+              - 账期
+              - 回款
+              - 逾期
+              - 付款周期
+            impact: 影响资金缺口测算
+            suggestion: 落地账期与历史回款数据
+          - item: 质押担保
+            keywords:
+              - 质押
+              - 抵押
+              - 保理
+              - 担保
+            impact: 触及禁入/重复融资
+            suggestion: 核查应收质押与担保状态
+          - item: 融资需求
+            keywords:
+              - 资金需求
+              - 融资
+              - 缺口
+              - 垫资
+            impact: 判断需求真实性
+            suggestion: 量化融资额度与用款时点
+        医药:
+          - item: 医保回款占比
+            keywords:
+              - 医保
+              - 回款占比
+              - 结算平台
+            impact: 判定回款稳定性
+            suggestion: 量化医保/非医保回款占比
+          - item: 两票制合规
+            keywords:
+              - 两票制
+              - 合规
+              - 票
+              - 资质
+            impact: 涉合规瑕疵应收不宜入池
+            suggestion: 核查两票制与购销合规
+          - item: 账期错配
+            keywords:
+              - 账期
+              - 垫资
+              - 回款周期
+              - 错配
+            impact: 影响需求紧迫度
+            suggestion: 拆解上游账期与下游回款节奏
+          - item: 涉诉类
+            keywords:
+              - 涉诉
+              - 贿赂
+              - 处罚
+              - 诉讼
+            impact: 信用与合规风险
+            suggestion: 核查是否存在商贿涉诉
+          - item: 付款主体
+            keywords:
+              - 医院
+              - 付款方
+              - 结算
+              - 回款来源
+            impact: 决定增信保障
+            suggestion: 明确应收最终付款主体
+        电商:
+          - item: 刷单虚构
+            keywords:
+              - 刷单
+              - 虚构
+              - 成交
+              - 交易真实性
+            impact: 对应应收不真实
+            suggestion: 交叉核验平台交易记录
+          - item: 平台扣款罚款
+            keywords:
+              - 扣款
+              - 罚款
+              - 争议
+              - 退货率
+            impact: 净回款低于账面
+            suggestion: 核对平台扣款与退货率
+          - item: 结算周期
+            keywords:
+              - 结算
+              - T+
+              - 回款
+              - 账期
+            impact: 影响资金预测
+            suggestion: 明确平台结算与到账周期
+          - item: 供应商账期
+            keywords:
+              - 供应商
+              - 账期
+              - 备货
+              - OEM
+            impact: 衡量缺口与杠杆
+            suggestion: 梳理大促备货账期条款
+          - item: 私域占比
+            keywords:
+              - 私域
+              - 渠道
+              - 占比
+            impact: 回款来源多样性
+            suggestion: 拆分公域/私域销售占比
+
+    next_action:
+      enabled:
+        true
+
+# =====================================================
+# Compliance Guard
+# =====================================================
+guardrail:
+  enabled:
+    true
+
+  rules:
+    forbidden:
+      - 保证融资额度
+      - 保证审批通过
+      - 保证放款时间
+      - 承诺固定利率
+    action:
+      rewrite
+
+# =====================================================
+# Database
+# =====================================================
+database:
+  mysql:
+    host:
+      127.0.0.1
+
+    port:
+      3307
+
+    database:
+      factoring_coach
+    user: factoring_app
+    password: ${MYSQL_PASSWORD}
+
+  redis:
+    # 缓存仅作辅助；MySQL 每次先核对归属及新鲜度。TTL 单位秒。
+    cache_enabled: true
+    cache_ttl: 60
+    host:
+      127.0.0.1
+
+    port:
+      6379
+    password: ${REDIS_PASSWORD}
+
+auth:
+  jwt_secret: ${APP_AUTH__JWT_SECRET}
+  # Explicit demo grant only; no team model or wildcard access.
+  coach_sales:
+    coach_demo: [sales_demo]
+
+# =====================================================
+# Logging
+# =====================================================
+logging:
+  level:
+    INFO
+
+  # 运行期日志文件（滚动，全级别；修复 uvicorn 默认配置下 INFO 被丢弃）
+  file:
+    path:
+      ./logs/agent.log
+    max_bytes:
+      5242880
+    backup_count:
+      3
+
+  save:
+    conversation:
+      true
+
+    agent_trace:
+      true
+
+    evidence:
+
+      true
+
+    workflow_state:
+      true
+
+    # 集中错误/异常审计：命中 ERROR/异常时写 t_agent_error 表
+    audit_error:
+      true

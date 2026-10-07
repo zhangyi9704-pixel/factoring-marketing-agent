@@ -1,0 +1,39 @@
+# Local credentials (the example is safe to track).
+.env
+.env.*
+!.env.example
+
+# Python environment and generated artifacts.
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+logs/
+*.log
+
+# v3 migration: temporary knowledge files and IDE metadata.
+data/**/*.tmp
+.idea/
+.claude/
+.workbuddy/
+
+.pytest_tmp_m2*/
+.pytest_tmp_m3*/
+.pytest_tmp_threshold*/
+.pytest_tmp_eval*/
+.pytest_tmp_metrics*/
+.runtime/
+data/knowledge_feedback/
+.pytest_tmp_auth*/
+
+.pytest_tmp_docs*/
+backups/
+
+# All local test output and archived generated artifacts.
+.pytest_tmp*/
+archive/generated/
+
+# Local documentation, acceptance reports and archived material.
+/docs/
+/reports/
+/archive/

@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>保理营销教练 Agent</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <h1>保理营销教练 Agent</h1>
+      <nav v-if="auth.user">
+        <span>{{ auth.user.username }} · {{ {sales:'销售',coach:'主管',admin:'管理员'}[auth.user.role] }}</span>
+        <button :class="{active: view==='brief'}" @click="enterBrief">案例简报</button>
+        <button :class="{active: view==='drill'}" @click="enterDrill">情景演练</button>
+        <button :class="{active: view==='dashboard'}" @click="enterDashboard">{{ dashboardLabel }}</button>
+        <button v-if="canReview" :class="{active: view==='review'}" @click="enterReview">审核台</button>
+        <button :class="{active: view==='knowledge'}" @click="view='knowledge'">知识库</button>
+        <button @click="logout">退出登录</button>
+      </nav>
+    </header>
+
+    <main>
+      <p v-if="notice" class="notice">{{ notice }}</p>
+      <section v-if="view==='login'" class="panel">
+        <h2>登录</h2>
+        <form @submit.prevent="login">
+          <label>账号<input v-model="auth.username" autocomplete="username" required /></label>
+          <label>密码<input v-model="auth.password" type="password" autocomplete="current-password" required /></label>
+          <button type="submit" :disabled="auth.loading">{{ auth.loading ? '登录中…' : '登录' }}</button>
+        </form>
+      </section>
+
+      <!-- ================= 案例简报（访前简报，随会话创建产出） ================= -->
+      <section v-if="view==='brief'" class="panel">
+        <h2>案例简报</h2>
+        <template v-if="!brief.session">
+          <p>当前账号：{{ auth.user && auth.user.username }}</p>
+          <label>选择案例
+            <select v-model="brief.caseId">
+              <option v-for="c in brief.cases" :key="c.case_id" :value="c.case_id">{{ c.company }}（{{ c.industry }}）</option>
+            </select>
+          </label>
+          <button @click="startBriefing" :disabled="brief.loading">{{ brief.loading ? '生成中…' : '生成访前简报' }}</button>
+          <p class="hint">选择案例创建会话，图内 briefing 节点自动产出访前简报（RAG 检索 + 1 次推理）。</p>
+        </template>
+
+        <template v-else>
+          <div class="case-info" v-if="brief.publicCase">
+            <h3>{{ brief.publicCase.company }} · {{ brief.publicCase.client_role }}</h3>
+            <ul><li v-for="f in brief.publicCase.known_facts" :key="f">{{ f }}</li></ul>
+          </div>
+
+          <div v-if="brief.briefing" class="report">
+            <div class="cards">
+              <div class="card">
+                <h4>拜访目标</h4>
+                <ul><li v-for="g in brief.briefing.visit_goals" :key="g">{{ g }}</li></ul>
+              </div>
+              <div class="card">
+                <h4>优先问题</h4>
+                <ul><li v-for="q in brief.briefing.priority_questions" :key="q.question">{{ q.question }}（{{ q.purpose }}）</li></ul>
+              </div>
+              <div class="card">
+                <h4>风险提示</h4>
+                <ul><li v-for="r in brief.briefing.risk_warnings" :key="r.risk">{{ r.risk }}：{{ r.basis }}</li></ul>
+              </div>
+              <div class="card">
+                <h4>合规警示</h4>
+                <ul><li v-for="c in brief.briefing.compliance_warnings" :key="c">{{ c }}</li></ul>
+              </div>
+              <div class="card">
+                <h4>待确认（业务澄清）</h4>
+                <ul><li v-for="c in brief.briefing.clarifications" :key="c.element">{{ c.element }}：{{ c.suggestion }}</li></ul>
+              </div>
+              <div class="card">
+                <h4>可能的异议</h4>
+                <ul><li v-for="o in brief.briefing.possible_objections" :key="o.objection">{{ o.objection }} → {{ o.response_hint }}</li></ul>
+              </div>
+              <div class="card">
+                <h4>非目标</h4>
+                <ul><li v-for="n in brief.briefing.non_goals" :key="n">{{ n }}</li></ul>
+              </div>
+            </div>
+            <p class="hint" v-if="brief.briefing.knowledge_missing && brief.briefing.knowledge_missing.missing">⚠ {{ brief.briefing.knowledge_missing.message }}</p>
+            <p class="hint" v-if="brief.briefing.sources && brief.briefing.sources.length">引用来源：{{ brief.briefing.sources.map(s => s.doc).join('、') }}</p>
+          </div>
+
+          <button @click="enterDrillFromBrief" :disabled="brief.loading">进入演练</button>
+          <button type="button" @click="resetBriefing">换个案例</button>
+        </template>
+      </section>
+
+      <!-- ================= 情景演练 ================= -->
+      <section v-if="view==='drill'" class="panel">
+        <h2>情景演练</h2>
+
+        <template v-if="!drill.session">
+          <p>当前账号：{{ auth.user && auth.user.username }}</p>
+          <label>选择案例
+            <select v-model="drill.caseId">
+              <option v-for="c in drill.cases" :key="c.case_id" :value="c.case_id">{{ c.company }}（{{ c.industry }}）</option>
+            </select>
+          </label>
+          <button @click="startSession" :disabled="drill.loading">{{ drill.loading ? '创建中…' : '开始演练' }}</button>
+          <label>已有会话编号<input v-model="drill.resumeId" placeholder="sess_…" /></label>
+          <button @click="restoreSession" :disabled="drill.loading || !drill.resumeId">恢复会话</button>
+          <button type="button" v-if="drill.resumeId && notice" @click="reconcileMessage('abort')" :disabled="drill.loading">终止本次演练（保留记录）</button>
+          <p class="hint">工号会随会话落库；演练结束并生成复盘后，主管看板按该工号即可看到本轮成绩。</p>
+        </template>
+
+        <template v-else>
+          <div class="case-info" v-if="drill.publicCase">
+            <h3>{{ drill.publicCase.company }} · {{ drill.publicCase.client_role }}</h3>
+            <ul><li v-for="f in drill.publicCase.known_facts" :key="f">{{ f }}</li></ul>
+          </div>
+
+          <p class="hint">会话编号：{{ drill.session.session_id }}</p>
+          <button type="button" v-if="drill.finished" @click="resetDrill" :disabled="drill.loading">新建演练</button>
+          <div class="chat">
+            <div v-for="(m,i) in drill.messages" :key="i + '-' + m.role" class="msg" :class="m.role">
+              <div class="who">{{ m.role==='customer' ? '客户' : '销售' }}<template v-if="m.turn != null"> · 第{{ m.turn }}轮</template></div>
+              <div class="text" :class="{streaming: m.streaming}">{{ m.content }}</div>
+              <div class="warn" v-if="m.role==='sales' && m.warnings && m.warnings.length">⚠ 合规提醒：{{ m.warnings.join('、') }}</div>
+            </div>
+          </div>
+
+          <form @submit.prevent="sendMessage" class="chat-input">
+            <input v-model="drill.message" maxlength="4000" :disabled="drill.loading || !!drill.pending" placeholder="输入销售话术（[结束] 结束演练）" />
+            <button type="submit" :disabled="drill.loading || drill.finished || !!drill.pending || drill.interrupted">发送</button>
+            <button type="button" v-if="drill.loading && drill.controller" @click="cancelMessage">取消接收</button>
+            <button type="button" v-if="drill.pending && !drill.loading" @click="reconnectMessage">重连核对本轮</button>
+            <button type="button" v-if="drill.pending || drill.interrupted" @click="reconcileMessage('reconcile')" :disabled="drill.loading">核对已保存结果</button>
+            <button type="button" v-if="drill.pending || drill.interrupted" @click="reconcileMessage('abort')" :disabled="drill.loading">终止本次演练（保留记录）</button>
+            <button type="button" @click="finishSession" :disabled="drill.loading || !!drill.pending || drill.finished || drill.interrupted">结束演练</button>
+          </form>
+          <p class="hint" v-if="drill.l2Degraded">语义判定暂不可用，已标记降级；严重本地规则命中采取保守拦截。</p>
+          <p class="hint" v-if="drill.pending">本轮尚未收到完成确认；重连将使用原请求编号，不新增轮次。</p>
+          <p class="hint" v-if="drill.interrupted">会话存在中途失败或待核对请求。可核对已保存结果；无法恢复时可终止并保留记录，再开启新演练。</p>
+          <p class="hint" v-if="drill.recoveryDegraded">当前为显式开发内存模式，应用重启后不能恢复。</p>
+          <p class="hint" v-if="drill.needsHumanReview">该会话需要人工审核（严重拦截或累计警告达到阈值）；请联系授权主管在审核台核查。</p>
+
+          <div v-if="drill.evalStages.length" class="card stages">
+            <h4>评估进度（流式）</h4>
+            <ul>
+              <li v-for="s in drill.evalStages" :key="s.stage" :class="s.status">
+                <template v-if="s.status==='done'">✓</template>
+                <template v-else-if="s.status==='running'">…</template>
+                <template v-else>·</template>
+                {{ s.label }}<span v-if="s.summary" class="why"> · {{ s.summary }}</span>
+              </li>
+            </ul>
+          </div>
+
+          <template v-if="drill.evaluation">
+            <h3>复盘报告（基于本轮全部对话生成 · 工号 {{ userId }}）</h3>
+            <p class="hint">综合得分 <b>{{ drill.evaluation.total_score }}</b>（取机会诊断分）· 能力总分 {{ drill.evaluation.sales_score.total }}</p>
+            <div v-if="drill.evaluation.compliance_events && drill.evaluation.compliance_events.length" class="report">
+              <h4>独立合规审计（拦截话术未进入客户对话）</h4>
+              <article v-for="(event,index) in drill.evaluation.compliance_events" :key="index">
+                <b>{{ event.rule }} · {{ event.action }}</b>
+                <p>审计原话：{{ event.raw_text }}</p>
+                <p>合规应答：{{ event.compliant_response }}</p>
+                <p v-if="event.details.l2_degraded">语义判定降级，已采取保守处置。</p>
+              </article>
+            </div>
+            <div class="cards">
+              <div class="card">
+                <h4>机会诊断（每维评分）</h4>
+                <p>得分 <b>{{ drill.evaluation.opportunity.score }}</b> · {{ drill.evaluation.opportunity.level }}</p>
+                <ul>
+                  <li v-for="(v,k) in drill.evaluation.opportunity.dimension_scores" :key="k">
+                    {{ dimLabel(k) }}（权重{{ v.weight }}%）：<b>{{ v.score }} 分</b><span v-if="v.evidence_missing">（证据缺失，计 0）</span>
+                    <div class="why" v-if="v.rationale">{{ v.rationale }}</div>
+                  </li>
+                </ul>
+              </div>
+              <div class="card">
+                <h4>销售能力（每维评分）</h4>
+                <p>总分 <b>{{ drill.evaluation.sales_score.total }}</b></p>
+                <ul>
+                  <li v-for="(v,k) in drill.evaluation.sales_score.dimension_scores" :key="k">
+                    {{ dimLabel(k) }}（权重{{ v.weight }}%）：<b>{{ v.score }} 分</b><span v-if="v.evidence_missing">（证据缺失，计 0）</span>
+                    <div class="why" v-if="v.rationale">{{ v.rationale }}</div>
+                  </li>
+                </ul>
+              </div>
+              <div class="card">
+                <h4>评分证据（对话原话）</h4>
+                <ul>
+                  <li v-for="(e,i) in drill.evaluation.evidence" :key="i">
+                    第{{ e.turn }}轮 · {{ dimLabel(e.dimension) }}：
+                    <div class="why" v-if="e.quote_sales">销售：「{{ e.quote_sales }}」</div>
+                    <div class="why" v-if="e.quote_customer">客户：「{{ e.quote_customer }}」</div>
+                  </li>
+                </ul>
+                <p class="hint" v-if="!drill.evaluation.evidence.length">本轮对话未抽到可评分证据。</p>
+              </div>
+              <div class="card">
+                <h4>遗漏问题</h4>
+                <ul><li v-for="m in drill.evaluation.missing_questions" :key="m.item">{{ m.item }}：{{ m.impact }}<div class="why">建议：{{ m.suggestion }}</div></li></ul>
+                <p class="hint" v-if="!drill.evaluation.missing_questions.length">行业核查清单已全部覆盖，无遗漏。</p>
+              </div>
+              <div class="card">
+                <h4>下一步行动</h4>
+                <ul><li v-for="a in drill.evaluation.next_actions" :key="a.action">[{{ a.priority }}] {{ a.action }}：{{ a.note }}</li></ul>
+              </div>
+            </div>
+            <pre class="md" v-if="drill.evaluation.markdown">{{ drill.evaluation.markdown }}</pre>
+          </template>
+        </template>
+      </section>
+
+      <!-- ================= 主管看板 ================= -->
+      <section v-if="view==='dashboard'" class="panel">
+        <h2>{{ dashboardLabel }} · 成绩画像</h2>
+        <form @submit.prevent="loadScore">
+          <label>销售工号<input v-model="dashboard.userId" required type="number" min="1" :disabled="auth.user && auth.user.role==='sales'" placeholder="请输入授权销售的工号" /></label>
+          <button type="submit" :disabled="dashboard.loading">{{ dashboard.loading ? '加载中…' : '查询' }}</button>
+        </form>
+        <div v-if="dashboard.score" class="report">
+          <div class="cards">
+            <div class="card"><h4>会话</h4><p>{{ dashboard.score.total_sessions }} 个（已评估 {{ dashboard.score.evaluated_sessions }}）</p></div>
+            <div class="card"><h4>机会均分</h4><p>{{ dashboard.score.avg_opportunity }}</p></div>
+            <div class="card"><h4>能力均分</h4><p>{{ dashboard.score.avg_sales_score }}</p></div>
+          </div>
+          <p><b>等级分布：</b>{{ levelDistText }}</p>
+          <p><b>维度均值：</b><span v-for="(v,k) in dashboard.score.dimension_averages" :key="k" class="dim">{{ dimLabel(k) }} {{ v }}分</span></p>
+
+          <template v-if="dashboard.score.evaluated_sessions">
+            <h3>辅导报告（跨 {{ dashboard.score.evaluated_sessions }} 次已评估演练聚合，基于全部对话）<span v-if="dashboard.loading" class="hint">逐段生成中…</span></h3>
+            <div class="cards">
+              <div class="card" v-if="dashboard.score.coaching.opportunity">
+                <h4>一、机会诊断</h4>
+                <p>机会均分 <b>{{ dashboard.score.coaching.opportunity.avg_score }}</b> · {{ levelDistText }}</p>
+                <ul>
+                  <li v-for="d in dashboard.score.coaching.opportunity.dimension_averages" :key="d.key">{{ d.label }}：<b>{{ d.avg }} 分</b></li>
+                </ul>
+              </div>
+              <div class="card" v-if="dashboard.score.coaching.review">
+                <h4>二、复盘辅导</h4>
+                <p>能力总分均值 <b>{{ dashboard.score.coaching.review.avg_total }}</b></p>
+                <ul>
+                  <li v-for="d in dashboard.score.coaching.review.dimension_averages" :key="d.key">{{ d.label }}：<b>{{ d.avg }} 分</b></li>
+                </ul>
+              </div>
+              <div class="card" v-if="dashboard.score.coaching.evidence">
+                <h4>三、评分证据</h4>
+                <p v-if="dashboard.score.coaching.evidence.by_dimension.length">跨会话证据：<span v-for="d in dashboard.score.coaching.evidence.by_dimension" :key="d.key" class="dim">{{ d.label }} {{ d.quotes }} 条</span></p>
+                <p class="hint" v-else>暂无评分证据记录。</p>
+                <template v-if="dashboard.score.coaching.evidence.latest.items.length">
+                  <p>最近一次（{{ dashboard.score.coaching.evidence.latest.session_id }} · {{ dashboard.score.coaching.evidence.latest.case_id }}）：</p>
+                  <ul>
+                    <li v-for="(e,i) in dashboard.score.coaching.evidence.latest.items" :key="i">
+                      第{{ e.turn }}轮：
+                      <div class="why" v-if="e.quote_sales">销售：「{{ e.quote_sales }}」</div>
+                      <div class="why" v-if="e.quote_customer">客户：「{{ e.quote_customer }}」</div>
+                      <div v-if="e.dimensions && e.dimensions.length">
+                        <span v-for="d in e.dimensions" :key="d.label" class="dim">{{ d.label }} {{ d.score }}分</span>
+                      </div>
+                    </li>
+                  </ul>
+                </template>
+              </div>
+              <div class="card" v-if="dashboard.score.coaching.missing">
+                <h4>四、遗漏问题</h4>
+                <ul>
+                  <li v-for="m in dashboard.score.coaching.missing" :key="m.item">{{ m.item }}（{{ m.count }} 次）：{{ m.impact }}<div class="why">建议：{{ m.suggestion }}</div></li>
+                </ul>
+                <p class="hint" v-if="!dashboard.score.coaching.missing.length">行业核查清单已全覆盖，无遗漏。</p>
+              </div>
+              <div class="card" v-if="dashboard.score.coaching.improvement">
+                <h4>五、改善空间以及下一步行动</h4>
+                <p>薄弱维度：<span v-for="d in dashboard.score.coaching.improvement.weakest_dimensions" :key="d.key" class="dim">{{ d.label }} {{ d.avg }}分</span></p>
+                <p>证据缺口（未触达）：<span v-for="d in dashboard.score.coaching.improvement.evidence_gaps" :key="d.key" class="dim">{{ d.label }} {{ d.sessions }} 次</span></p>
+                <ul><li v-for="a in dashboard.score.coaching.improvement.next_actions" :key="a.action">[{{ a.priority }}] {{ a.action }}：{{ a.note }}</li></ul>
+              </div>
+            </div>
+            <p class="hint" v-if="dashboard.loading && dashboard.score.evaluated_sessions">辅导报告逐段生成中…</p>
+          </template>
+        </div>
+      </section>
+
+      <!-- ================= 审核台 ================= -->
+      <section v-if="view==='review' && canReview" class="panel review-panel" aria-label="审核台">
+        <h2>审核台</h2>
+        <p class="hint">{{ auth.user.role==='admin' ? '管理员可查看全部待办。' : '查看本人及明确授权销售的事项。' }}先领取，再填写结论关闭；关闭记录会保留。</p>
+        <form @submit.prevent="loadReview(0)" class="review-filters">
+          <label>待办队列<select v-model="review.queue" @change="changeReviewQueue" :disabled="review.saving">
+            <option value="knowledge">知识待办</option><option value="compliance">合规待办</option>
+          </select></label>
+          <label>事项类型<select v-model="review.filters.type" :disabled="review.saving || review.queue==='compliance'">
+            <option value="">{{ review.queue==='compliance' ? '合规升级' : '全部知识类型' }}</option>
+            <template v-if="review.queue==='knowledge'">
+              <option value="missing">知识缺失</option><option value="conflict">知识冲突</option><option value="out_of_scope">超出知识范围</option>
+            </template>
+          </select></label>
+          <label>处理状态<select v-model="review.filters.status" :disabled="review.saving">
+            <option value="">全部状态</option><option value="pending">待领取</option><option value="processing">处理中</option>
+            <option value="resolved">已解决</option><option value="dismissed">已忽略</option>
+          </select></label>
+          <label>登记起始时间<input v-model="review.filters.since" type="datetime-local" :disabled="review.saving" /></label>
+          <label>登记结束时间<input v-model="review.filters.until" type="datetime-local" :disabled="review.saving" /></label>
+          <button type="submit" :disabled="review.loading || review.saving">{{ review.loading ? '刷新中…' : '筛选 / 刷新' }}</button>
+        </form>
+        <p class="review-success" role="status" v-if="review.feedback">{{ review.feedback }}</p>
+        <p class="notice" role="alert" v-if="review.error">{{ review.error }}</p>
+        <p v-if="review.loading" role="status">正在加载待办…</p>
+        <p v-else-if="!review.items.length">当前筛选条件下没有待办。</p>
+        <div class="review-table" v-else>
+          <table>
+            <caption>待办列表 · 每页25条</caption>
+            <thead><tr><th>事项 / 问题原文</th><th>状态</th><th>登记时间</th><th>操作</th></tr></thead>
+            <tbody><tr v-for="item in review.items" :key="review.queue + '-' + item.id">
+              <td><b>{{ reviewType(item.type) }} · #{{ item.id }}</b><p class="review-question">{{ item.question }}</p>
+                <small>销售编号 {{ item.user_id }} · {{ item.session_id || '独立知识检索' }}</small></td>
+              <td>{{ reviewStatus(item.status) }}</td><td>{{ reviewTime(item.created_at) }}</td>
+              <td><button type="button" @click="selectReview(item)" :disabled="review.saving || review.detailLoading" :aria-label="'查看待办 ' + item.id">查看详情</button></td>
+            </tr></tbody>
+          </table>
+          <div class="review-pagination">
+            <button @click="loadReview(Math.max(0, review.offset-25))" :disabled="!review.offset || review.loading || review.saving">上一页</button>
+            <span>第 {{ Math.floor(review.offset/25)+1 }} 页</span>
+            <button @click="loadReview(review.offset+25)" :disabled="!review.hasNext || review.loading || review.saving">下一页</button>
+          </div>
+        </div>
+        <p v-if="review.detailLoading" role="status">正在加载详情…</p>
+        <article v-if="review.selected" class="report review-detail" aria-label="待办详情">
+          <h3>待办详情 · {{ reviewType(review.selected.type) }} #{{ review.selected.id }}</h3>
+          <p>状态：{{ reviewStatus(review.selected.status) }} · 处理人：{{ review.selected.assignee || '尚未领取' }}</p>
+          <h4>{{ review.selected.type==='compliance' ? '违规原文' : '问题原文' }}</h4>
+          <p class="review-question">{{ review.selected.question }}</p>
+          <div v-if="review.selected.type==='compliance'" class="review-compliance card">
+            <h4>标准合规应答</h4>
+            <p class="review-question">{{ review.selected.compliant_response || '此记录没有可用应答，请核查对应规则，勿编造历史口径。' }}</p>
+            <small>{{ review.selected.compliant_response_source }}</small>
+            <p>规则：{{ review.selected.context.rule || '未记录' }} · 严重程度：{{ review.selected.severity || '未记录' }}</p>
+          </div>
+          <h4>会话上下文</h4>
+          <p>会话：{{ review.selected.session_id || '无关联会话（独立知识检索）' }} · 销售编号：{{ review.selected.user_id }} · 轮次：{{ review.selected.context.turn ?? '未记录' }}</p>
+          <p v-if="review.selected.context.reason">检索原因：{{ review.selected.context.reason }}</p>
+          <template v-if="review.selected.context.items && review.selected.context.items.length">
+            <h4>检索来源</h4>
+            <article class="card" v-for="(source,index) in review.selected.context.items" :key="index">
+              <b>{{ reviewSource(source) }}</b><p v-if="source.source">原始来源：{{ source.source }}</p>
+              <p class="review-question">{{ source.summary || source.content }}</p>
+            </article>
+          </template>
+          <details><summary>完整登记上下文</summary><pre>{{ pretty(review.selected.context) }}</pre></details>
+          <p>登记时间：{{ reviewTime(review.selected.created_at) }} · 关闭时间：{{ reviewTime(review.selected.resolved_at) }}</p>
+          <button v-if="review.selected.status==='pending'" @click="updateReview('processing')" :disabled="review.saving || review.loading">领取待办</button>
+          <template v-else-if="review.selected.status==='processing' && reviewOwned">
+            <label>处理结论<textarea v-model="review.resolution" rows="5" maxlength="10000" :disabled="review.saving" placeholder="填写核实过程与处理结论"></textarea></label>
+            <fieldset v-if="review.queue==='knowledge' && review.selected.type!=='out_of_scope'" :disabled="review.saving">
+              <legend>知识回流（关闭后只保存草稿）</legend>
+              <label>处理方式<select v-model="review.publication.action"><option value="">仅关闭待办</option><option value="adopt">采纳知识</option><option v-if="review.selected.type!=='conflict'" value="supplement">补充知识</option></select></label>
+              <template v-if="review.publication.action">
+                <label v-if="review.selected.type==='conflict'">采纳原始版本<select v-model="review.publication.adoptedKey"><option value="">请选择</option><option v-for="(item,index) in review.selected.context.items" :value="String(index)">{{ reviewSource(item) }}</option></select></label>
+                <label v-else>更新条目ID（留空新增）<input v-model="review.publication.doc_id" maxlength="64" /></label>
+                <label>知识正文<textarea v-model="review.publication.content" rows="6" maxlength="20000" placeholder="填写人工核实后的正文；模型建议须核实"></textarea></label>
+                <label>核实来源<input v-model="review.publication.source" maxlength="512" /></label>
+                <label>主题<input v-model="review.publication.topic" maxlength="128" /></label>
+                <label>类别<select v-model="review.publication.category"><option value="product">产品</option><option value="industry">行业</option><option value="compliance">合规</option><option value="process">流程</option></select></label>
+                <label>行业<select v-model="review.publication.industry"><option value="all">通用</option><option>基建</option><option>医药</option><option>电商</option></select></label>
+                <label>生效日<input type="date" v-model="review.publication.effective_date" /></label>
+              </template>
+            </fieldset>
+            <button @click="updateReview('resolved')" :disabled="review.saving || review.loading || !review.resolution.trim()">关闭为已解决</button>
+            <button class="review-secondary" @click="updateReview('dismissed')" :disabled="review.saving || review.loading || !review.resolution.trim()">关闭为已忽略</button>
+          </template>
+          <p v-else-if="review.selected.status==='processing'" class="hint">已由其他人领取，仅领取人可填写结论关闭。</p>
+          <template v-else><h4>处理结论</h4><p class="review-question">{{ review.selected.resolution }}</p></template>
+          <fieldset v-if="auth.user.role==='admin' && review.selected.status==='processing'" :disabled="review.saving || review.loading">
+            <legend>管理员回收或转派</legend>
+            <label>目标处理人编号<input v-model="review.transferAssignee" inputmode="numeric" placeholder="留空回收，填写编号转派" /></label>
+            <label>回收或转派理由<textarea v-model="review.transferReason" rows="2" maxlength="1000" placeholder="填写停用、离岗或转派原因"></textarea></label>
+            <button @click="reassignReview" :disabled="!review.transferReason.trim()">{{ review.transferAssignee.trim() ? '转派给指定处理人' : '回收为待领取' }}</button>
+          </fieldset>
+          <article v-if="review.draft" class="card">
+            <h4>知识草稿 · {{ review.draft.status }}</h4>
+            <p>{{ review.draft.metadata.doc_id }} · {{ review.draft.metadata.version }}</p>
+            <p>来源：{{ review.draft.metadata.source }} · 主题：{{ review.draft.metadata.topic }}</p>
+            <pre>{{ review.draft.content }}</pre>
+            <details><summary>版本与确认记录</summary><pre>{{ pretty(review.draft) }}</pre></details>
+            <template v-if="auth.user.role==='admin' && review.draft.status==='draft'">
+              <label><input type="checkbox" v-model="review.contentConfirmed" />我已核实知识正文</label>
+              <label><input type="checkbox" v-model="review.sourceConfirmed" />我已核实来源与版本</label>
+              <button @click="publishReviewDraft('confirm')" :disabled="review.saving || !review.contentConfirmed || !review.sourceConfirmed">确认正文与来源</button>
+            </template>
+            <button v-if="auth.user.role==='admin' && review.draft.status==='confirmed'" @click="publishReviewDraft('publish')" :disabled="review.saving">验证入库并发布</button>
+            <template v-if="['failed','reconcile_required','publishing'].includes(review.draft.status)">
+              <p class="hint">发布状态需核对。管理员可核对目录与向量并恢复；恢复成功后另行发布。</p>
+              <button v-if="auth.user.role==='admin'" @click="publishReviewDraft('recover')" :disabled="review.saving">核对并恢复</button>
+            </template>
+            <p v-if="auth.user.role!=='admin'" class="hint">草稿由管理员核实正文与来源后发布。</p>
+          </article>
+          <p v-if="review.saving" role="status">正在提交，请勿重复操作…</p>
+        </article>
+      </section>
+
+      <!-- ================= 知识库 ================= -->
+      <section v-if="view==='knowledge'" class="panel">
+        <h2>知识检索</h2>
+        <form @submit.prevent="searchKnowledge">
+          <label>检索问句<input v-model="knowledge.query" required maxlength="2000" placeholder="请输入要核实的保理问题" /></label>
+          <label>行业<select v-model="knowledge.industry"><option>all</option><option>基建</option><option>医药</option><option>电商</option></select></label>
+          <button type="submit" :disabled="knowledge.searching">{{ knowledge.searching ? '检索中…' : '检索知识' }}</button>
+        </form>
+        <div v-if="knowledge.search" class="report">
+          <p><b>检索结论：</b>{{ {rag:'正常命中',conflict:'知识冲突',missing:'无充分依据'}[knowledge.search.mode] }}</p>
+          <p v-if="knowledge.search.message">{{ knowledge.search.message }}</p>
+          <p v-if="knowledge.search.reason">原因：{{ knowledge.search.reason }}</p>
+          <p v-if="knowledge.search.rerank_degraded">精排不可用，已按召回降级策略处理。</p>
+          <p v-if="knowledge.search.escalation_id">人工核实登记：{{ knowledge.search.escalation_id }}（授权主管可在审核台处理）</p>
+          <article v-for="item in knowledge.search.items" :key="item.chunk_id" class="card">
+            <b>{{ item.doc_id }} · {{ item.version }}</b><p>来源：{{ item.source }}</p>
+            <p>{{ item.summary }}</p>
+          </article>
+        </div>
+        <h2 v-if="canMaintainKnowledge">知识库维护</h2>
+        <form v-if="canMaintainKnowledge" @submit.prevent="uploadDoc" enctype="multipart/form-data">
+          <label>来源
+            <select v-model="knowledge.source">
+              <option value="product">product（产品）</option>
+              <option value="industry">industry（行业）</option>
+              <option value="compliance">compliance（合规）</option>
+              <option value="process">process（销售流程）</option>
+            </select>
+          </label>
+          <label>文档文件<input type="file" ref="file" accept=".md,.txt,.pdf,.docx" /></label>
+          <button type="submit" :disabled="knowledge.loading">{{ knowledge.loading ? '入库中…' : '上传并入库' }}</button>
+        </form>
+        <div v-if="knowledge.result" class="report">
+          <p><b>入库结果：</b>{{ knowledge.result.status }} · chunks={{ knowledge.result.chunk_cnt }}</p>
+          <p>{{ knowledge.result.doc_name }}<span v-if="knowledge.result.error"> · {{ knowledge.result.error }}</span></p>
+        </div>
+      </section>
+    </main>
+
+    <footer>保理营销教练 · FastAPI + LangGraph 单 Agent + DeepSeek + RAG</footer>
+  </div>
+
+  <script src="/static/vue.global.prod.js"></script>
+  <script src="/static/auth.js"></script>
+  <script src="/static/sse.js"></script>
+  <script src="/static/review.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

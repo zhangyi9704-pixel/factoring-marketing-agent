@@ -1,0 +1,229 @@
+version: CMP-v1.0
+source: 《知识资料库-四类条目与合规红线规则.md》第四节；按技术文档§3.6/§8.1/§8.3适配
+rules:
+- rule_id: CMP-01
+  category: 承诺类
+  description: 禁止承诺/暗示放款时效（当天/T+0/最快X天/肯定到账）
+  severity: warn
+  applies_to: both
+  patterns:
+    keywords:
+    - 当天放款
+    - 当天到账
+    - 24小时放款
+    - 肯定到账
+    - T+0
+    - 秒放
+    regex:
+    - 保证.{0,6}(放款|到账|打款)
+    - (当天|24小时|T\+0|最快\s*\d+\s*天)
+    - (当天|24小时|T\+0|最快\s*\d+\s*天).{0,8}(放款|到账|款)
+    - (肯定|一定|没问题).{0,6}(到账|放款)
+    semantic: 是否对放款时间给出确定性承诺（含'应该没问题''大概率'类暗示）
+  violation_example: 3天肯定到账，放心
+  compliant_response: 时效以最终审批为准。您大促的时间点我记下了，资料前置齐的话流程上可以走加急，我先帮您把材料顺序理出来
+  related_hooks:
+  - ECO-15
+  action_description: 标记+复盘扣分+应答纠正
+  action: rewrite
+- rule_id: CMP-02
+  category: 承诺类
+  description: 禁止承诺/预批额度（保证给到X万/先批500万/额度没问题）
+  severity: warn
+  applies_to: both
+  patterns:
+    keywords:
+    - 额度没问题
+    - 包额度
+    - 先批给你
+    regex:
+    - 保证.{0,6}(额度|\d+\s*万)
+    - 先(给|批)\s*\d+\s*万
+    - 先(给|批)\s*你?\s*\d+\s*万
+    - 额度.{0,4}(没问题|包了|稳的)
+    semantic: 是否对融资金额给出确定性承诺或预批暗示
+  violation_example: 先给你批500万没问题
+  compliant_response: 额度由风控按应收质量和回款数据核定，我不能替审批线给数。您在途货款的账单给我看看，我按口径先帮您估个可上报的区间
+  related_hooks:
+  - ECO-15
+  action_description: 标记+复盘扣分+应答纠正
+  action: rewrite
+- rule_id: CMP-03
+  category: 承诺类
+  description: 禁止承诺利率/费率（年化X%/比别家低/最低价/费率我定）
+  severity: warn
+  applies_to: both
+  patterns:
+    keywords:
+    - 最低利率
+    - 最低费率
+    - 费率我定
+    - 费率好说
+    regex:
+    - 年化\s*\d+
+    - (最低|比.{0,4}低).{0,4}(利率|费率|价)
+    - 费率.{0,4}(我定|好说)
+    - 费率.{0,4}(我定|好说|给你压)
+    semantic: 是否对利率/费率给出具体数字或优劣承诺
+  violation_example: 能做到年化5%，比别家低
+  compliant_response: 费率跟账期、付款人资质、行业都挂钩，初访给不了准数——按您账龄结构我可以讲讲影响逻辑，最终以审批为准
+  related_hooks:
+  - PHA-15
+  action_description: 标记+复盘扣分+应答纠正
+  action: rewrite
+- rule_id: CMP-04
+  category: 承诺类
+  description: 禁止对审批结果表态（包过/肯定批/100%通过/走个形式）
+  severity: warn
+  applies_to: both
+  patterns:
+    keywords:
+    - 包过
+    - 肯定批
+    - 100%通过
+    - 走个形式
+    - 跟风控熟
+    regex:
+    - (包过|肯定批|100%\s*通过|走个形式|我跟风控熟)
+    - (包过|肯定能?批|百分百通过|100%\s*通过)
+    - (我|我们)和?风控.{0,4}熟
+    semantic: 是否对审批结果表达确定性或人情干预暗示
+  violation_example: 我们和风控熟，基本走个形式
+  compliant_response: 审批独立于销售线，结果我没法预判。能做的是把资料和应收质量呈现清楚，这是通过率最实在的变量
+  related_hooks: []
+  action_description: 标记+复盘扣分+应答纠正
+  action: rewrite
+- rule_id: CMP-05
+  category: 资料真实性
+  description: 禁止暗示协助补/变通/伪造资料（想办法/先放款后补/帮你处理/包装一下/可以操作）
+  severity: block
+  applies_to: both
+  patterns:
+    keywords:
+    - 先放款后补
+    - 包装一下
+    - 帮你处理单据
+    - 变通一下
+    regex:
+    - (想办法|操作一下|包装|先放款后补|帮你处理|变通)
+    - (想办法|操作一下|包装|变通)
+    - (单据|资料|合同|计量).{0,10}(想办法|可以操作|能变通|先放款后补|帮你处理)
+    semantic: 是否存在协助规避资料要求、补造单据的暗示（含'这个可以谈''有空间'类隐晦语，且上下文涉及单据/资料/合同）
+    context_keywords:
+    - 单据
+    - 资料
+    - 合同
+    - 计量
+  violation_example: 计量没做完没关系，单据可以想办法
+  compliant_response: 单据没有捷径——未计量的货款本来就不构成有效应收。我建议把已确认和待确认的分开，先核已确认的部分
+  related_hooks:
+  - INF-16
+  action_description: 立即标记+演练内警示+合规维度0分
+  action: block
+- rule_id: CMP-06
+  category: 规避监管
+  description: 禁止指导规避确权/账户监管/转让登记
+  severity: block
+  applies_to: both
+  patterns:
+    keywords:
+    - 不用通知付款人
+    - 不进监管户
+    - 登记可以不办
+    regex:
+    - (不用通知|绕过|不进监管户|登记可以不办)
+    - (不用通知|绕过|不进|不设).{0,6}(付款人|监管户?|账户监管|转让登记|确权)
+    - 账户监管.{0,8}(可以灵活|灵活点)
+    semantic: 是否指导规避确权、账户监管或转让登记安排
+  violation_example: 账户监管那边可以灵活点
+  compliant_response: 回款账户监管是明保理的基本安排，也是保护双方的资金闭环，这一步省不掉
+  related_hooks: []
+  action_description: 立即标记+演练内警示
+  action: block
+- rule_id: CMP-07
+  category: 误导类
+  description: 禁止绝对化与贬低同业（最大/零风险/绝对安全/别家都是坑）
+  severity: warn
+  applies_to: both
+  patterns:
+    keywords:
+    - 零风险
+    - 绝对安全
+    - 稳赚
+    regex:
+    - (最大的|零风险|绝对安全|稳赚)
+    - 别家.{0,6}(坑|不靠谱|乱)
+    - 别家.{0,6}(坑|不靠谱|乱|不行)
+    semantic: 绝对化表述或无依据贬低同业
+  violation_example: 我们零风险，别家都是坑
+  compliant_response: 行业里各家有各家的打法，我不评价同行。我能讲清楚的是我们怎么做风控、怎么核您的应收
+  related_hooks:
+  - PHA-15
+  action_description: 标记+话术改写
+  action: rewrite
+- rule_id: CMP-08
+  category: 数据合规
+  description: 禁止索取与业务无关的敏感个人信息；禁止对数据用途做超授权承诺
+  severity: warn
+  applies_to: both
+  patterns:
+    keywords:
+    - 绝对不泄露
+    - 随便看
+    regex:
+    - 身份证|家庭住址|家属
+    - 绝对不泄露|随便看
+    - (身份证号|家庭住址|家属信息)
+    - 绝不?泄露|随便看
+    semantic: 索取信息是否超出尽调必要范围；对数据用途的承诺是否超出保密协议能覆盖的范围
+  violation_example: 后台全授权给我们看，绝对不泄露
+  compliant_response: 只需要与回款相关的账单和流水权限，范围在保密协议里写死，用途仅限尽调核验
+  related_hooks:
+  - ECO-13
+  action_description: 标记+应答纠正
+  action: log
+- rule_id: CMP-09
+  category: 权限类
+  description: 禁止越权变更合同条款/报价方案（销售阶段见 KB-PR-001 边界）
+  severity: warn
+  applies_to: both
+  patterns:
+    keywords:
+    - 我这边定
+    - 帮你改条款
+    regex:
+    - (合同条款|利率|期限).{0,6}(我这边定|帮你改)
+    - (合同条款|利率|期限|费率).{0,6}(我(这边)?定|帮你改|可以改)
+    semantic: 是否越过销售角色变更条款或方案要素
+  violation_example: 期限我帮你改长一点
+  compliant_response: 条款要素以审批文件为准，我把您的诉求带回去，让审批线评估
+  related_hooks: []
+  action_description: 标记+转人工
+  action: escalate
+- rule_id: CMP-10
+  category: 输出侧专用
+  description: 生成文本含违规承诺时移除承诺，改写为真实核实及审批条件并复检
+  severity: rewrite
+  applies_to: agent_output
+  patterns:
+    keywords: []
+    regex: []
+    semantic: 输出侧复用CMP-01至09扫描；移除承诺表述，说明核实与审批条件，改写后复检。不得在违规原句后追加免责声明。
+    reuse_rules:
+    - CMP-01
+    - CMP-02
+    - CMP-03
+    - CMP-04
+    - CMP-05
+    - CMP-06
+    - CMP-07
+    - CMP-08
+    - CMP-09
+  violation_example: （输出侧扫描）
+  compliant_response: 额度、费率与时效需完成资料核验并经独立审批后确定，本次沟通仅说明流程和核验要求。
+  related_hooks:
+  - INF-16
+  - PHA-15
+  - ECO-15
+  action_description: 改写后复检；不得保留违规原句追加免责声明
+  action: rewrite

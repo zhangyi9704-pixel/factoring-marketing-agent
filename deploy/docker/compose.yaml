@@ -1,0 +1,145 @@
+name: factoring
+
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.18
+    restart: unless-stopped
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    command:
+      - etcd
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --data-dir=/etcd
+    volumes:
+      - etcd_data:/etcd
+    healthcheck:
+      test: [CMD, etcdctl, endpoint, health]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  minio:
+    image: minio/minio:RELEASE.2024-05-28T17-19-04Z
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in root .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in root .env}
+    command: [server, /data, --console-address, ":9001"]
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://localhost:9000/minio/health/live]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  milvus:
+    image: milvusdb/milvus:v2.5.27
+    restart: unless-stopped
+    command: [milvus, run, standalone]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      MINIO_REGION: us-east-1
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in root .env}
+      MINIO_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in root .env}
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:19530:19530"
+      - "127.0.0.1:9091:9091"
+    volumes:
+      - milvus_data:/var/lib/milvus
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://localhost:9091/healthz]
+      interval: 10s
+      timeout: 10s
+      retries: 18
+      start_period: 90s
+
+  mysql:
+    image: mysql:8.0.45
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in root .env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?Set MYSQL_DATABASE=factoring_coach in root .env}
+      MYSQL_USER: ${MYSQL_USER:?Set MYSQL_USER in root .env}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in root .env}
+    command: [--character-set-server=utf8mb4, --collation-server=utf8mb4_0900_ai_ci]
+    ports:
+      - "127.0.0.1:3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          MYSQL_PWD="$${MYSQL_PASSWORD}" mysql --protocol=TCP --host=127.0.0.1
+          --user="$${MYSQL_USER}" --database="$${MYSQL_DATABASE}"
+          --batch --skip-column-names --execute='SELECT 1' | grep -qx 1
+      interval: 10s
+      timeout: 10s
+      retries: 18
+      start_period: 60s
+
+  redis:
+    image: redis:7.2.16-alpine
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in root .env}
+    command:
+      - /bin/sh
+      - -ec
+      - exec docker-entrypoint.sh redis-server --requirepass "$$REDIS_PASSWORD" --appendonly yes --appendfsync everysec --dir /data
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep -qx PONG']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  redis-stack:
+    image: redis/redis-stack-server:7.4.0-v8
+    restart: unless-stopped
+    environment:
+      CHECKPOINT_REDIS_PASSWORD: ${CHECKPOINT_REDIS_PASSWORD:?Set CHECKPOINT_REDIS_PASSWORD in root .env}
+      REDIS_ARGS: --requirepass ${CHECKPOINT_REDIS_PASSWORD:?Set CHECKPOINT_REDIS_PASSWORD in root .env} --appendonly yes --appendfsync everysec --dir /data
+    ports:
+      - "127.0.0.1:6380:6379"
+    volumes:
+      - redis_stack_data:/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          export REDISCLI_AUTH="$$CHECKPOINT_REDIS_PASSWORD";
+          redis-cli ping | grep -qx PONG &&
+          redis-cli INFO modules | grep -q 'module:name=search,' &&
+          redis-cli INFO modules | grep -q 'module:name=ReJSON,'
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+volumes:
+  etcd_data:
+  minio_data:
+  milvus_data:
+  mysql_data:
+  redis_data:
+  redis_stack_data:
